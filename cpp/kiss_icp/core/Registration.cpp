@@ -23,9 +23,12 @@
 #include "Registration.hpp"
 
 #include <tbb/blocked_range.h>
+#include <tbb/concurrent_vector.h>
 #include <tbb/global_control.h>
 #include <tbb/info.h>
+#include <tbb/parallel_for.h>
 #include <tbb/parallel_reduce.h>
+#include <tbb/task_arena.h>
 
 #include <algorithm>
 #include <cmath>
@@ -35,6 +38,7 @@
 #include <tuple>
 
 #include "VoxelHashMap.hpp"
+#include "VoxelUtils.hpp"
 
 namespace Eigen {
 using Matrix6d = Eigen::Matrix<double, 6, 6>;
@@ -42,7 +46,7 @@ using Matrix3_6d = Eigen::Matrix<double, 3, 6>;
 using Vector6d = Eigen::Matrix<double, 6, 1>;
 }  // namespace Eigen
 
-using Correspondences = std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>>;
+using Correspondences = tbb::concurrent_vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>>;
 using LinearSystem = std::pair<Eigen::Matrix6d, Eigen::Vector6d>;
 
 namespace {
@@ -53,71 +57,23 @@ void TransformPoints(const Sophus::SE3d &T, std::vector<Eigen::Vector3d> &points
                    [&](const auto &point) { return T * point; });
 }
 
-using Voxel = kiss_icp::VoxelHashMap::Voxel;
-std::vector<Voxel> GetAdjacentVoxels(const Voxel &voxel, int adjacent_voxels = 1) {
-    std::vector<Voxel> voxel_neighborhood;
-    for (int i = voxel.x() - adjacent_voxels; i < voxel.x() + adjacent_voxels + 1; ++i) {
-        for (int j = voxel.y() - adjacent_voxels; j < voxel.y() + adjacent_voxels + 1; ++j) {
-            for (int k = voxel.z() - adjacent_voxels; k < voxel.z() + adjacent_voxels + 1; ++k) {
-                voxel_neighborhood.emplace_back(i, j, k);
-            }
-        }
-    }
-    return voxel_neighborhood;
-}
-
-std::tuple<Eigen::Vector3d, double> GetClosestNeighbor(const Eigen::Vector3d &point,
-                                                       const kiss_icp::VoxelHashMap &voxel_map) {
-    // Convert the point to voxel coordinates
-    const auto &voxel = voxel_map.PointToVoxel(point);
-    // Get nearby voxels on the map
-    const auto &query_voxels = GetAdjacentVoxels(voxel);
-    // Extract the points contained within the neighborhood voxels
-    const auto &neighbors = voxel_map.GetPoints(query_voxels);
-
-    // Find the nearest neighbor
-    Eigen::Vector3d closest_neighbor;
-    double closest_distance = std::numeric_limits<double>::max();
-    std::for_each(neighbors.cbegin(), neighbors.cend(), [&](const auto &neighbor) {
-        double distance = (neighbor - point).norm();
-        if (distance < closest_distance) {
-            closest_neighbor = neighbor;
-            closest_distance = distance;
-        }
-    });
-    return std::make_tuple(closest_neighbor, closest_distance);
-}
-
 Correspondences DataAssociation(const std::vector<Eigen::Vector3d> &points,
                                 const kiss_icp::VoxelHashMap &voxel_map,
                                 const double max_correspondance_distance) {
     using points_iterator = std::vector<Eigen::Vector3d>::const_iterator;
     Correspondences correspondences;
     correspondences.reserve(points.size());
-    correspondences = tbb::parallel_reduce(
+    tbb::parallel_for(
         // Range
         tbb::blocked_range<points_iterator>{points.cbegin(), points.cend()},
-        // Identity
-        correspondences,
-        // 1st lambda: Parallel computation
-        [&](const tbb::blocked_range<points_iterator> &r, Correspondences res) -> Correspondences {
-            res.reserve(r.size());
+        [&](const tbb::blocked_range<points_iterator> &r) {
             std::for_each(r.begin(), r.end(), [&](const auto &point) {
-                const auto &[closest_neighbor, distance] = GetClosestNeighbor(point, voxel_map);
+                const auto &[closest_neighbor, distance] = voxel_map.GetClosestNeighbor(point);
                 if (distance < max_correspondance_distance) {
-                    res.emplace_back(point, closest_neighbor);
+                    correspondences.emplace_back(point, closest_neighbor);
                 }
             });
-            return res;
-        },
-        // 2nd lambda: Parallel reduction
-        [](Correspondences a, const Correspondences &b) -> Correspondences {
-            a.insert(a.end(),                              //
-                     std::make_move_iterator(b.cbegin()),  //
-                     std::make_move_iterator(b.cend()));
-            return a;
         });
-
     return correspondences;
 }
 
@@ -171,7 +127,8 @@ Registration::Registration(int max_num_iteration, double convergence_criterion, 
     : max_num_iterations_(max_num_iteration),
       convergence_criterion_(convergence_criterion),
       // Only manipulate the number of threads if the user specifies something greater than 0
-      max_num_threads_(max_num_threads > 0 ? max_num_threads : tbb::info::default_concurrency()) {
+      max_num_threads_(max_num_threads > 0 ? max_num_threads
+                                           : tbb::this_task_arena::max_concurrency()) {
     // This global variable requires static duration storage to be able to manipulate the max
     // concurrency from TBB across the entire class
     static const auto tbb_control_settings = tbb::global_control(

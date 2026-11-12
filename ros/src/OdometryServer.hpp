@@ -26,15 +26,15 @@
 #include "kiss_icp/pipeline/KissICP.hpp"
 
 // ROS 2
-#include <tf2_ros/buffer.h>
-#include <tf2_ros/transform_broadcaster.h>
-#include <tf2_ros/transform_listener.h>
-
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/header.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <string>
+#include <tf2_ros/buffer.hpp>
+#include <tf2_ros/transform_broadcaster.hpp>
+#include <tf2_ros/transform_listener.hpp>
 
 namespace kiss_icp_ros {
 
@@ -45,6 +45,10 @@ public:
     explicit OdometryServer(const rclcpp::NodeOptions &options);
 
 private:
+    /// Declare ROS parameters and set the associated variables (in this class and in the provided
+    /// config object)
+    void initializeParameters(kiss_icp::pipeline::KISSConfig &config);
+
     /// Register new frame
     void RegisterFrame(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &msg);
 
@@ -52,15 +56,18 @@ private:
     void PublishOdometry(const Sophus::SE3d &kiss_pose, const std_msgs::msg::Header &header);
 
     /// Stream the debugging point clouds for visualization (if required)
-    void PublishClouds(const std::vector<Eigen::Vector3d> frame,
-                       const std::vector<Eigen::Vector3d> keypoints,
+    void PublishClouds(const std::vector<Eigen::Vector3d> &frame,
+                       const std::vector<Eigen::Vector3d> &keypoints,
                        const std_msgs::msg::Header &header);
+    void ResetService(const std::shared_ptr<std_srvs::srv::Empty::Request> request,
+                      std::shared_ptr<std_srvs::srv::Empty::Response> response);
 
 private:
     /// Tools for broadcasting TFs.
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     std::unique_ptr<tf2_ros::Buffer> tf2_buffer_;
     std::unique_ptr<tf2_ros::TransformListener> tf2_listener_;
+    bool invert_odom_tf_;
     bool publish_odom_tf_;
     bool publish_debug_clouds_;
 
@@ -73,11 +80,14 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kpoints_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_publisher_;
 
+    /// Service servers.
+    rclcpp::Service<std_srvs::srv::Empty>::SharedPtr reset_service_;
+
     /// KISS-ICP
     std::unique_ptr<kiss_icp::pipeline::KissICP> kiss_icp_;
 
     /// Global/map coordinate frame.
-    std::string odom_frame_{"odom"};
+    std::string lidar_odom_frame_{"odom_lidar"};
     std::string base_frame_{};
 
     /// Covariance diagonal

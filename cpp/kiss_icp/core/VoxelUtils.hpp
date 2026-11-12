@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2022 Ignacio Vizzo, Tiziano Guadagnino, Benedikt Mersch, Cyrill
+// Copyright (c) 2024 Ignacio Vizzo, Tiziano Guadagnino, Benedikt Mersch, Cyrill
 // Stachniss.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -20,29 +20,32 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-#include "Deskew.hpp"
-
-#include <tbb/parallel_for.h>
+//
+#pragma once
 
 #include <Eigen/Core>
-#include <sophus/se3.hpp>
+#include <cmath>
 #include <vector>
 
-namespace {
-/// TODO(Nacho) Explain what is the very important meaning of this param
-constexpr double mid_pose_timestamp{0.5};
-}  // namespace
-
 namespace kiss_icp {
-std::vector<Eigen::Vector3d> DeSkewScan(const std::vector<Eigen::Vector3d> &frame,
-                                        const std::vector<double> &timestamps,
-                                        const Sophus::SE3d &delta) {
-    const auto delta_pose = delta.log();
-    std::vector<Eigen::Vector3d> corrected_frame(frame.size());
-    tbb::parallel_for(size_t(0), frame.size(), [&](size_t i) {
-        const auto motion = Sophus::SE3d::exp((timestamps[i] - mid_pose_timestamp) * delta_pose);
-        corrected_frame[i] = motion * frame[i];
-    });
-    return corrected_frame;
+
+using Voxel = Eigen::Vector3i;
+inline Voxel PointToVoxel(const Eigen::Vector3d &point, const double voxel_size) {
+    return Voxel(static_cast<int>(std::floor(point.x() / voxel_size)),
+                 static_cast<int>(std::floor(point.y() / voxel_size)),
+                 static_cast<int>(std::floor(point.z() / voxel_size)));
 }
+
+/// Voxelize a point cloud keeping the original coordinates
+std::vector<Eigen::Vector3d> VoxelDownsample(const std::vector<Eigen::Vector3d> &frame,
+                                             const double voxel_size);
+
 }  // namespace kiss_icp
+
+template <>
+struct std::hash<kiss_icp::Voxel> {
+    std::size_t operator()(const kiss_icp::Voxel &voxel) const {
+        const uint32_t *vec = reinterpret_cast<const uint32_t *>(voxel.data());
+        return (vec[0] * 73856093 ^ vec[1] * 19349669 ^ vec[2] * 83492791);
+    }
+};
